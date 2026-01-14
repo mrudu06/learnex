@@ -6,3 +6,5 @@ Flask-JWT-Extended
 requests
 psycopg2-binary
 python-dotenv
+google-genai
+PyPDF2

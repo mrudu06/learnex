@@ -39,8 +39,26 @@ const Quiz = () => {
           return;
         }
         
-        console.log("Sending token:", token); // Debug log
+        // Generate new questions based on topic/difficulty
+        // Defaulting to General Knowledge as requested
+        const generateRes = await fetch('http://localhost:5000/api/quiz/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                topic: 'General Knowledge',
+                count: 5,
+                difficulty: location.state?.level || 'Medium'
+            })
+        });
 
+        if (!generateRes.ok) {
+            console.error("Failed to generate quiz");
+        }
+
+        // Now fetch the generated questions
         const response = await fetch('http://localhost:5000/api/quiz', {
           headers: {
             'Authorization': `Bearer ${token}`

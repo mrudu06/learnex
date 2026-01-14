@@ -58,13 +58,13 @@ class QuizToolController:
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def generate_quiz_questions(self, topic: str = "IPL 2025", count: int = 10, difficulty: str = "Medium") -> str:
+    def generate_quiz_questions(self, topic: str = "General Knowledge", count: int = 10, difficulty: str = "Medium") -> str:
         """
-        Generates creative cricket quiz questions using Gemini's internal knowledge.
-        Defaults to the most recent IPL season (IPL 2025).
+        Generates quiz questions using Gemini's knowledge.
+        Defaults to General Knowledge.
 
         Args:
-            topic: The specific cricket topic (default "IPL 2025").
+            topic: The specific topic (default "General Knowledge").
             count: Number of questions to generate (default 10).
             difficulty: Difficulty level (Easy, Medium, Hard).
         """
@@ -72,12 +72,12 @@ class QuizToolController:
             return "Error: GeminiService is not initialized. Check configuration."
 
         prompt = (
-            f"Generate {count} creative, unique, and engaging multiple-choice quiz questions specifically about '{topic}'. "
-            f"Focus on the most recent season (e.g., IPL 2025) if applicable. "
-            f"Include interesting stats, dramatic moments, or specific match scenarios to make it creative. "
+            f"Generate {count} multiple-choice quiz questions about '{topic}'. "
             f"Difficulty: {difficulty}. "
-            f"Include the correct answer and a short explanation for why it is correct. "
-            f"Return the result in a structured JSON format."
+            f"Return the result as a strictly formatted JSON array. "
+            f"Each object in the array must have these keys: 'question' (string), 'options' (array of 4 strings), and 'answer' (string, matching one of the options). "
+            f"Example format: [{{'question': '...', 'options': ['...'], 'answer': '...'}}]. "
+            f"Do not include any markdown formatting or explanations outside the JSON."
         )
 
         try:

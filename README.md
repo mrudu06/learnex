@@ -1,81 +1,100 @@
-i# Cricket Quiz App 
+# LearnEx - AI-Powered Learning Platform
 
-A dynamic cricket quiz application that generates questions using real-world data from Cricsheet and the generative capabilities of Google's Gemini AI. User authentication and scoring are managed via a PostgreSQL database.
+LearnEx is a modern web application designed to enhance the learning experience by combining structured course content with AI-driven interactive tools. It features a React-based frontend and a Flask backend, integrating Google's Gemini AI to provide intelligent assistance.
 
-## Features
+##  Key Features
 
-- **AI-Generated Questions**: Uses Gemini to generate unique and challenging questions (approx. 10 per session) based on raw cricket data.
-- **Real Data**: Utilizes authentic match data from [Cricsheet](https://cricsheet.org/).
-- **User Authentication**: Secure sign-up and login functionality.
-- **Score Tracking**: Persists user scores and history in a PostgreSQL database.
-- **Game Mechanics**:
-    - **Level Selection**: Choose difficulty levels that alter core game conditions.
-    - **Timer**: 10-second timer per question.
-    - **Leaderboards**: Per-game leaderboard and overall XP-based ranking.
+*   **Course Management**: Browse available courses and lessons (seeded sample data available).
+*   **Interactive Study Mode**:
+    *   **PDF Viewer**: Upload and read PDF study materials directly in the app.
+    *   **AI Tutor**: Ask questions about the currently open PDF document. The AI (Gemini) reads the document context and provides relevant answers.
+*   **Adaptive Quizzes**:
+    *   **AI-Generated Quizzes**: The system can generate custom quizzes on any topic using Gemini AI.
+    *   **Progress Tracking**: User performance is tracked, and XP/scores are awarded.
+*   **User Dashboard**:
+    *   **Leaderboard**: Compare your progress with other learners.
+    *   **Profile Stats**: detailed view of your learning history.
+*   **Authentication**: Secure user registration and login system with JWT tokens.
 
-## Tech Stack
-
-- **Data Source**: [Cricsheet](https://cricsheet.org/) (JSON/YAML match data)
-- **AI Engine**: Google Gemini API
-- **Database**: PostgreSQL (for Users and Scores)
-- **Backend**: Python (Recommended for Data/AI integration)
-- **Frontend**: React + Vite
-
-## Architecture
-
-![Architecture Diagram](assets/architecture_diagram.jpeg)
-
-1. **Frontend**: Handles level choosing, MCQ display, 10s timer, and leaderboards.
-2. **Backend (Flask)**: Manages authentication, AI data processing, and API endpoints.
-3. **Data Flow**:
-    - **Blob Storage** feeds data to the Backend.
-    - **Gemini AI** processes data to generate questions.
-    - **PostgreSQL** stores user data and scores.
-
-## Database Schema (Proposed)
-
-### `users`
-- `id` (Primary Key)
-- `username`
-- `email`
-- `password_hash`
-- `created_at`
-
-### `scores`
-- `id` (Primary Key)
-- `user_id` (Foreign Key)
-- `score`
-- `total_questions`
-- `date_played`
-
-## � Day 1 Progress
-
-### Branch: `main`
-- Initialized project repository and structure.
-- Defined core architecture, tech stack, and database schema.
-
-### Branch: `meeraaj`
-- Refactored `README.md` for better clarity and detail.
-- Enhanced descriptions of project features and architectural flow.
-
-### Branch: `mrudu`
-- **MCP Server Setup**: Implemented the Model Context Protocol tool (`quiz_mcp_tool.py`) for AI interaction.
-- **Gemini Integration**: Built `GeminiService` using the new `google-genai` SDK (migrated from deprecated `google-generativeai`).
-- **API Management**: Implemented rate-limit handling (429 errors) and switched to `gemini-2.5-flash` for better performance.
-- **Testing**: Added `test_gemini.py` and `list_models.py` to verify API keys and model availability.
-
-## �Setup
+## 🛠 Tech Stack
 
 ### Frontend
-1. Navigate to the `frontend` directory: `cd frontend`
-2. Install dependencies: `npm install`
-3. Run the development server: `npm run dev`
+*   **React** (Vite)
+*   **React Router** (Navigation)
+*   **Framer Motion** (Animations)
+*   **React PDF** (Document Rendering)
+*   **Tailwind CSS** (Styling - assumed based on components)
+*   **Lucide React** (Icons)
 
-### Backend (To be implemented)
-1. Clone the repository.
-2. Set up PostgreSQL database.
-3. Configure environment variables (`GEMINI_API_KEY`, `DB_CONNECTION_STRING`).
-4. Run the application.
+### Backend
+*   **Flask** (Python Web Framework)
+*   **SQLAlchemy** (ORM / Database)
+*   **SQLite** (Default Database)
+*   **Flask-JWT-Extended** (Authentication)
+*   **PyPDF2** (PDF Text Extraction)
+*   **Google Gemini API** (AI Intelligence)
 
+## ⚙️ Setup & Installation
 
+### Prerequisites
+*   Node.js (v16+)
+*   Python (v3.10+)
+*   Google Gemini API Key
 
+### 1. Clone the Repository
+```bash
+git clone <repository-url>
+cd learnex
+```
+
+### 2. Backend Setup
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Environment Variables**:
+Create a `.env` file in the root `learnex` directory:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+SECRET_KEY=your_secret_key
+DATABASE_URL=sqlite:///site.db
+```
+
+**Initialize Database**:
+```bash
+# This will create sample users and courses
+python seed_data.py
+python seed_courses.py
+```
+
+**Run Server**:
+```bash
+python app.py
+# Server will start at http://localhost:5000
+```
+
+### 3. Frontend Setup
+```bash
+cd frontend
+npm install
+npm run dev
+# App will run at http://localhost:5173
+```
+
+## 📝 Usage
+
+1.  **Register/Login**: Create an account to start storing your progress.
+2.  **Study**: Go to the "Study" tab, upload a PDF related to your subject.
+3.  **Ask AI**: Type questions in the chat panel. For example, "Summarize the introduction" or "What is the key concept in page 3?".
+4.  **Quiz**: Go to the "Practice" tab to take quizzes generated by AI or pre-defined in the course.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request.
+
+## 📄 License
+
+[MIT License](LICENSE) (or your preferred license)

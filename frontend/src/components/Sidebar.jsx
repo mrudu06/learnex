@@ -9,8 +9,9 @@ const Sidebar = () => {
 
   const menuItems = [
     { path: '/', icon: <LayoutDashboard size={20} />, label: 'Dashboard' },
-    { path: '/quiz', icon: <PlayCircle size={20} />, label: 'Start Quiz' },
-    { path: '/history', icon: <History size={20} />, label: 'Previous Quizzes' },
+    { path: '/study', icon: <PlayCircle size={20} />, label: 'Study' },
+    { path: '/quiz', icon: <PlayCircle size={20} />, label: 'Practice' },
+    { path: '/history', icon: <History size={20} />, label: 'History' },
     { path: '/leaderboard', icon: <Trophy size={20} />, label: 'Leaderboard' },
     { path: '/profile', icon: <User size={20} />, label: 'Profile' },
   ];
@@ -22,7 +23,7 @@ const Sidebar = () => {
       className="sidebar"
     >
       <div className="sidebar-header">
-        <h2>Cricket<span className="highlight">Quiz</span></h2>
+        <h2>Learn<span className="highlight">Ex</span></h2>
         <p className="user-greeting">Hello, {user?.name?.split(' ')[0]}</p>
       </div>
 

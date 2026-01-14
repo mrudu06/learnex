@@ -1,5 +1,5 @@
 {
-  "name": "quiz-app-frontend",
+  "name": "learnex-frontend",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -15,6 +15,7 @@
     "lucide-react": "^0.330.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-pdf": "^10.3.0",
     "react-router-dom": "^6.22.0"
   },
   "devDependencies": {

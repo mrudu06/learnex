@@ -4,13 +4,17 @@ from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import os
+import json
+import io
+from PyPDF2 import PdfReader
 from dotenv import load_dotenv
+from ai_service import GeminiService
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///site.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -44,6 +48,37 @@ class User(db.Model):
     def __repr__(self):
         return f"User('{self.username}', '{self.email}')"
 
+class Course(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    image_url = db.Column(db.String(200), nullable=True)
+    lessons = db.relationship('Lesson', backref='course', lazy=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'image_url': self.image_url,
+            'lesson_count': len(self.lessons)
+        }
+
+class Lesson(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id'), nullable=False)
+    questions = db.relationship('Question', backref='lesson', lazy=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'content': self.content,
+            'course_id': self.course_id
+        }
+
 # Storing quiz questions. 
 # Assuming Gemini sends a list of questions. We can store them as a JSON blob or individual rows.
 # For simplicity and flexibility with the "Gemini JSON" requirement, we'll store the whole quiz set or individual questions.
@@ -54,6 +89,7 @@ class Question(db.Model):
     question_text = db.Column(db.String(500), nullable=False)
     options = db.Column(db.JSON, nullable=False) # Storing options as JSON array
     correct_answer = db.Column(db.String(200), nullable=False)
+    lesson_id = db.Column(db.Integer, db.ForeignKey('lesson.id'), nullable=True)
     
     # Optional: Group questions by a "quiz_id" if we have multiple quizzes
     # quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id'))
@@ -63,7 +99,8 @@ class Question(db.Model):
             'id': self.id,
             'question': self.question_text,
             'options': self.options,
-            'answer': self.correct_answer
+            'answer': self.correct_answer,
+            'lesson_id': self.lesson_id
         }
 
 class QuizAttempt(db.Model):
@@ -154,6 +191,49 @@ def login():
         return jsonify({'message': 'Login Unsuccessful. Please check email and password'}), 401
 
 # 2. Quiz Data Endpoints
+
+@app.route('/api/quiz/generate', methods=['POST'])
+@jwt_required()
+def generate_quiz():
+    data = request.get_json()
+    topic = data.get('topic', 'General Knowledge')
+    count = data.get('count', 5)
+    difficulty = data.get('difficulty', 'Medium')
+    
+    gemini = GeminiService()
+    if not gemini.client:
+         return jsonify({'message': 'AI Service not configured'}), 503
+
+    json_response_text = gemini.generate_quiz(topic, count, difficulty)
+    
+    if not json_response_text:
+        return jsonify({'message': 'Failed to generate quiz from AI'}), 500
+
+    try:
+        # Clean up potential markdown formatting if Gemini adds it despite instructions
+        cleaned_text = json_response_text.replace('```json', '').replace('```', '').strip()
+        quiz_data = json.loads(cleaned_text)
+        
+        # Save to DB
+        Question.query.delete() # Clear old questions for this "active quiz" mode
+        
+        for item in quiz_data:
+            question = Question(
+                question_text=item.get('question'),
+                options=item.get('options'),
+                correct_answer=item.get('answer')
+            )
+            db.session.add(question)
+        
+        db.session.commit()
+        
+        return jsonify({'message': 'Quiz generated successfully', 'count': len(quiz_data)}), 200
+        
+    except json.JSONDecodeError:
+        return jsonify({'message': 'Failed to parse AI response', 'raw': json_response_text}), 500
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'Error saving data: {str(e)}'}), 500
 
 @app.route('/api/quiz/data', methods=['POST'])
 def receive_quiz_data():
@@ -306,6 +386,74 @@ def change_password():
     db.session.commit()
     
     return jsonify({'message': 'Password updated successfully'}), 200
+
+# --- Course Routes ---
+
+@app.route('/api/courses', methods=['GET'])
+@jwt_required()
+def get_courses():
+    courses = Course.query.all()
+    return jsonify([c.to_dict() for c in courses]), 200
+
+@app.route('/api/courses/<int:course_id>', methods=['GET'])
+@jwt_required()
+def get_course(course_id):
+    course = Course.query.get_or_404(course_id)
+    return jsonify({
+        **course.to_dict(),
+        'lessons': [l.to_dict() for l in course.lessons]
+    }), 200
+
+@app.route('/api/lessons/<int:lesson_id>', methods=['GET'])
+@jwt_required()
+def get_lesson(lesson_id):
+    lesson = Lesson.query.get_or_404(lesson_id)
+    return jsonify({
+        **lesson.to_dict(),
+        'questions': [q.to_dict() for q in lesson.questions]
+    }), 200
+
+# --- PDF & Chat Routes ---
+
+@app.route('/api/pdf/extract', methods=['POST'])
+@jwt_required()
+def extract_pdf_text():
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'message': 'No selected file'}), 400
+
+    if file:
+        try:
+            # Read PDF directly from memory
+            pdf_file = io.BytesIO(file.read())
+            reader = PdfReader(pdf_file)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+            
+            return jsonify({'text': text, 'message': 'PDF processed successfully'}), 200
+        except Exception as e:
+            return jsonify({'message': f'Error processing PDF: {str(e)}'}), 500
+
+@app.route('/api/chat', methods=['POST'])
+@jwt_required()
+def chat_with_ai():
+    data = request.get_json()
+    question = data.get('question')
+    context = data.get('context') # The extracted PDF text
+
+    if not question:
+        return jsonify({'message': 'Question is required'}), 400
+    
+    gemini = GeminiService()
+    if not gemini.client:
+         return jsonify({'message': 'AI Service not configured'}), 503
+
+    answer = gemini.ask_pdf(context, question)
+    return jsonify({'answer': answer}), 200
 
 if __name__ == '__main__':
     with app.app_context():
