@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: learnex-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      # Environment variables will be loaded from .env file inside backend if present
+      # But better to pass them explicitly or mount the file
+    volumes:
+      - ./backend/instance:/app/instance  # Persist SQLite DB
+      - ./backend/.env:/app/.env          # Mount .env so we don't bake secrets into image
+    restart: always
+
+  frontend:
+    build: ./frontend
+    container_name: learnex-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always

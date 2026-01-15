@@ -8,7 +8,8 @@ import json
 import io
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
-from ai_service import GeminiService
+from ai_service import AIService
+from youtube_service import YouTubeService
 
 load_dotenv()
 
@@ -16,6 +17,8 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///site.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 900))
 
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
@@ -141,6 +144,54 @@ class QuizAttemptAnswer(db.Model):
             'is_correct': self.is_correct
         }
 
+class Note(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=True) # Optional title
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'content': self.content,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat()
+        }
+
+class ChatSession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    messages = db.relationship('ChatMessage', backref='session', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        last_msg = self.messages[-1] if self.messages else None
+        preview = (last_msg.content[:50] + "...") if last_msg and len(last_msg.content) > 50 else (last_msg.content if last_msg else "")
+        return {
+            'id': self.id,
+            'title': self.title,
+            'created_at': self.created_at.isoformat(),
+            'last_message': preview
+        }
+
+class ChatMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('chat_session.id'), nullable=False)
+    role = db.Column(db.String(10), nullable=False) # 'user' or 'ai'
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    def to_dict(self):
+        return {
+            'role': self.role,
+            'content': self.content,
+            'timestamp': self.timestamp.isoformat()
+        }
+
 # --- Routes ---
 
 @app.route('/')
@@ -199,29 +250,86 @@ def generate_quiz():
     topic = data.get('topic', 'General Knowledge')
     count = data.get('count', 5)
     difficulty = data.get('difficulty', 'Medium')
+    context = data.get('context') # New: support quiz from PDF context
     
-    gemini = GeminiService()
-    if not gemini.client:
-         return jsonify({'message': 'AI Service not configured'}), 503
+    print(f"DEBUG: Generating Quiz. Topic: {topic}, Context Len: {len(context) if context else 0}")
 
-    json_response_text = gemini.generate_quiz(topic, count, difficulty)
+    ai_service = AIService()
+    # Check removed as AIService manages availability internally (local or remote)
+    # If strictly needed, we could add an is_configured() method, but requests will just fail if local is down.
+
+
+    json_response_text = ai_service.generate_quiz(topic, count, difficulty, context)
+    print(f"DEBUG: AI Response Len: {len(json_response_text) if json_response_text else 0}")
     
     if not json_response_text:
         return jsonify({'message': 'Failed to generate quiz from AI'}), 500
 
     try:
-        # Clean up potential markdown formatting if Gemini adds it despite instructions
-        cleaned_text = json_response_text.replace('```json', '').replace('```', '').strip()
-        quiz_data = json.loads(cleaned_text)
+        # Robust JSON extraction
+        start = json_response_text.find('[')
+        end = json_response_text.rfind(']') + 1
         
+        if start != -1 and end != 0:
+            cleaned_text = json_response_text[start:end]
+            quiz_data = json.loads(cleaned_text)
+        else:
+            print(f"Failed to find JSON in: {json_response_text}")
+            raise ValueError("No JSON array found in response")
+        
+        # Save to DB
+        def extract_questions_recursive(data):
+            found = []
+            if isinstance(data, dict):
+                # Normalize keys case-insensitive
+                normalized = {k.lower(): v for k, v in data.items()}
+                
+                # Handle variations
+                if 'correct_answer' in normalized and 'answer' not in normalized:
+                    normalized['answer'] = normalized['correct_answer']
+                
+                # Check signature
+                if 'question' in normalized and 'options' in normalized and 'answer' in normalized:
+                    return [normalized]
+                
+                # If not a question itself, search nested values (e.g. {"questions": [...]})
+                for v in data.values():
+                    found.extend(extract_questions_recursive(v))
+                    
+            elif isinstance(data, list):
+                for item in data:
+                    # specific handle for string-encoded JSON in list
+                    if isinstance(item, str):
+                        try: 
+                            item = json.loads(item)
+                        except: 
+                            pass
+                    found.extend(extract_questions_recursive(item))
+            
+            return found
+
+        candidates = extract_questions_recursive(quiz_data)
+
+        if not candidates:
+             msg = f"No valid questions found in AI response. Data sample: {str(quiz_data)[:200]}"
+             print(f"DEBUG: {msg}")
+             return jsonify({'message': msg}), 500
+
         # Save to DB
         Question.query.delete() # Clear old questions for this "active quiz" mode
         
-        for item in quiz_data:
+        for item in candidates:
+            # Normalize options if they are strings
+            opts = item['options']
+            if isinstance(opts, str):
+                opts = [opts]
+            elif not isinstance(opts, list):
+                opts = [] # invalid options
+
             question = Question(
-                question_text=item.get('question'),
-                options=item.get('options'),
-                correct_answer=item.get('answer')
+                question_text=item['question'],
+                options=opts,
+                correct_answer=item['answer']
             )
             db.session.add(question)
         
@@ -444,16 +552,162 @@ def chat_with_ai():
     data = request.get_json()
     question = data.get('question')
     context = data.get('context') # The extracted PDF text
+    mode = data.get('mode', 'partner')
 
     if not question:
         return jsonify({'message': 'Question is required'}), 400
     
-    gemini = GeminiService()
-    if not gemini.client:
-         return jsonify({'message': 'AI Service not configured'}), 503
+    ai_service = AIService()
 
-    answer = gemini.ask_pdf(context, question)
-    return jsonify({'answer': answer}), 200
+    answer = ai_service.ask_pdf(context, question, mode)
+    
+    # Save session if requested
+    session_id = data.get('session_id')
+    if session_id == 'new' or session_id is None:
+        # Create new session
+        current_user_id = int(get_jwt_identity())
+        # Provide a default title if not provided
+        title = question[:30] + "..." if len(question) > 30 else question
+        new_session = ChatSession(user_id=current_user_id, title=title)
+        db.session.add(new_session)
+        db.session.flush() # get ID
+        session_id = new_session.id
+    
+    if session_id:
+        # Verify ownership
+        session = ChatSession.query.get(session_id)
+        current_user_id = int(get_jwt_identity())
+        if session and session.user_id == current_user_id:
+            # Save User Message
+            db.session.add(ChatMessage(session_id=session_id, role='user', content=question))
+            # Save AI Message
+            db.session.add(ChatMessage(session_id=session_id, role='ai', content=answer))
+            db.session.commit()
+
+    return jsonify({'answer': answer, 'session_id': session_id}), 200
+
+@app.route('/api/chat/sessions', methods=['GET'])
+@jwt_required()
+def get_chat_sessions():
+    current_user_id = int(get_jwt_identity())
+    sessions = ChatSession.query.filter_by(user_id=current_user_id).order_by(ChatSession.created_at.desc()).all()
+    return jsonify([s.to_dict() for s in sessions]), 200
+
+@app.route('/api/chat/sessions/<int:session_id>', methods=['GET'])
+@jwt_required()
+def get_chat_messages(session_id):
+    current_user_id = int(get_jwt_identity())
+    session = ChatSession.query.get_or_404(session_id)
+    
+    if session.user_id != current_user_id:
+        return jsonify({'message': 'Unauthorized'}), 403
+        
+    messages = ChatMessage.query.filter_by(session_id=session_id).order_by(ChatMessage.timestamp.asc()).all()
+    return jsonify({'id': session.id, 'title': session.title, 'messages': [m.to_dict() for m in messages]}), 200
+
+@app.route('/api/chat/sessions/<int:session_id>', methods=['DELETE'])
+@jwt_required()
+def delete_chat_session(session_id):
+    current_user_id = int(get_jwt_identity())
+    session = ChatSession.query.get_or_404(session_id)
+    
+    if session.user_id != current_user_id:
+        return jsonify({'message': 'Unauthorized'}), 403
+        
+    db.session.delete(session)
+    db.session.commit()
+    return jsonify({'message': 'Chat session deleted'}), 200
+
+# --- Video Routes ---
+
+@app.route('/api/videos/recommend', methods=['POST'])
+@jwt_required()
+def recommend_videos():
+    data = request.get_json()
+    context = data.get('context')
+    topic = data.get('topic')
+    
+    if not context and not topic:
+         return jsonify({'message': 'Context or topic required'}), 400
+         
+    ai = AIService()
+    yt = YouTubeService()
+    
+    # Generate queries
+    search_context = context if context else f"Topic: {topic}"
+    queries = ai.generate_search_queries(search_context)
+    
+    print(f"DEBUG: Generated queries: {queries}")
+    
+    all_videos = []
+    seen_ids = set()
+    
+    for query in queries:
+        # Search a few videos per query
+        videos = yt.search_videos(query, limit=2)
+        for v in videos:
+            if v['id'] not in seen_ids:
+                all_videos.append(v)
+                seen_ids.add(v['id'])
+    
+    # Return top 6 distinct videos
+    return jsonify({'queries': queries, 'videos': all_videos[:6]}), 200
+
+# --- Note Routes ---
+
+@app.route('/api/notes', methods=['GET'])
+@jwt_required()
+def get_notes():
+    current_user_id = int(get_jwt_identity())
+    notes = Note.query.filter_by(user_id=current_user_id).order_by(Note.updated_at.desc()).all()
+    return jsonify([n.to_dict() for n in notes]), 200
+
+@app.route('/api/notes', methods=['POST'])
+@jwt_required()
+def create_note():
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json()
+    content = data.get('content')
+    title = data.get('title', 'Untitled Note')
+
+    if not content:
+        return jsonify({'message': 'Content is required'}), 400
+
+    note = Note(user_id=current_user_id, content=content, title=title)
+    db.session.add(note)
+    db.session.commit()
+    return jsonify(note.to_dict()), 201
+
+@app.route('/api/notes/<int:note_id>', methods=['PUT'])
+@jwt_required()
+def update_note(note_id):
+    current_user_id = int(get_jwt_identity())
+    note = Note.query.get_or_404(note_id)
+
+    if note.user_id != current_user_id:
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    data = request.get_json()
+    if 'content' in data:
+        note.content = data['content']
+    if 'title' in data:
+        note.title = data['title']
+    
+    db.session.commit()
+    return jsonify(note.to_dict()), 200
+
+@app.route('/api/notes/<int:note_id>', methods=['DELETE'])
+@jwt_required()
+def delete_note(note_id):
+    current_user_id = int(get_jwt_identity())
+    note = Note.query.get_or_404(note_id)
+
+    if note.user_id != current_user_id:
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    db.session.delete(note)
+    db.session.commit()
+    return jsonify({'message': 'Note deleted successfully'}), 200
 
 if __name__ == '__main__':
     with app.app_context():

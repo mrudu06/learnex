@@ -2,18 +2,19 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Timer, CheckCircle, XCircle, Circle } from 'lucide-react';
+import { Timer, CheckCircle, XCircle, Circle, Loader } from 'lucide-react';
 
 const Quiz = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const timerRef = useRef(null);
   const answersRef = useRef([]);
-  const { timeLimit = 10, level = 'Moderate' } = location.state || {};
+  const { timeLimit = 10, level = 'Moderate', context, topic } = location.state || {}; // Extract context
   const { user, updateXP } = useAuth();
 
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('Initializing...');
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(timeLimit);
@@ -25,7 +26,7 @@ const Quiz = () => {
   const [showCoins, setShowCoins] = useState(false);
   const [userAnswers, setUserAnswers] = useState([]);
 
-  console.log("Quiz Render State:", { loading, questionsLength: questions.length, currentQuestionIndex, isFinished, score });
+  console.log("Quiz Render State:", { loading, status, questionsLength: questions.length, currentQuestionIndex, isFinished, score });
 
   useEffect(() => {
     const fetchQuestions = async () => {
@@ -38,33 +39,67 @@ const Quiz = () => {
           navigate('/login');
           return;
         }
-        
-        // Generate new questions based on topic/difficulty
-        // Defaulting to General Knowledge as requested
-        const generateRes = await fetch('http://localhost:5000/api/quiz/generate', {
+
+        if (topic === 'Document Study' && !context) {
+          alert("Document context lost. Please go back and generate the quiz again.");
+          navigate('/study');
+          return;
+        }
+
+        setStatus(context ? 'Analyzing document & generating questions...' : 'Generating specific questions...');
+
+        // Prepare timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout
+
+        try {
+          // Generate new questions based on topic/difficulty
+          const generateRes = await fetch('http://localhost:5000/api/quiz/generate', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
             },
             body: JSON.stringify({
-                topic: 'General Knowledge',
-                count: 5,
-                difficulty: location.state?.level || 'Medium'
-            })
-        });
+              topic: topic || 'General Knowledge',
+              count: 15,
+              difficulty: location.state?.level || 'Medium',
+              context: context
+            }),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
 
-        if (!generateRes.ok) {
-            console.error("Failed to generate quiz");
+          if (!generateRes.ok) {
+            if (generateRes.status === 401 || generateRes.status === 422) {
+              alert("Session expired. Please log in again.");
+              navigate('/login');
+              return;
+            }
+            const errData = await generateRes.json().catch(() => ({}));
+            console.error("Failed to generate quiz", generateRes.status, errData);
+            alert(`Failed to generate quiz. Status: ${generateRes.status}. Message: ${errData.message || 'Unknown error'}`);
+            navigate('/study');
+            return;
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            alert("Quiz generation timed out. The context might be too long or the AI is busy.");
+            navigate('/study');
+            return;
+          }
+          throw err;
         }
+
+        setStatus('Loading questions...');
 
         // Now fetch the generated questions
         const response = await fetch('http://localhost:5000/api/quiz', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
-        }); 
-        
+        });
+
         if (response.ok) {
           const data = await response.json();
           const formattedQuestions = data.map(q => ({
@@ -73,34 +108,42 @@ const Quiz = () => {
             options: q.options,
             correctAnswer: q.answer
           }));
+
+          if (formattedQuestions.length === 0) {
+            alert("AI finished but returned no questions. Please try again.");
+            navigate('/study');
+            return;
+          }
+
           setQuestions(formattedQuestions);
         } else if (response.status === 401 || response.status === 422) {
           console.error('Session expired or invalid token');
-          localStorage.removeItem('user'); // Clear invalid session
+          alert("Session expired. Please log in again.");
           navigate('/login');
         } else {
           console.error('Failed to fetch questions');
         }
       } catch (error) {
         console.error('Error fetching questions:', error);
+        alert(`Error: ${error.message}`);
+        navigate('/study');
       } finally {
         setLoading(false);
       }
     };
 
     fetchQuestions();
-  }, [navigate]);
+  }, [navigate]); // Removed other dependencies to prevent re-execution loops
 
   const currentQuestion = questions[currentQuestionIndex];
 
   useEffect(() => {
-    if (isFinished || loading || !currentQuestion) return;
-    
-    setTimeLeft(timeLimit);
-    
+    if (loading || isFinished || questions.length === 0) return;
+
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
+          clearInterval(timerRef.current);
           handleTimeUp();
           return 0;
         }
@@ -109,92 +152,73 @@ const Quiz = () => {
     }, 1000);
 
     return () => clearInterval(timerRef.current);
-  }, [currentQuestionIndex, isFinished, timeLimit, loading, currentQuestion]);
+  }, [loading, isFinished, questions.length, currentQuestionIndex]);
 
   const handleTimeUp = () => {
-    clearInterval(timerRef.current);
-    handleAnswer(null);
+    handleAnswer(null); // Treat timeout as no answer/wrong
+  };
+
+  const finishQuiz = async () => {
+    setIsFinished(true);
+    if (score > 0) {
+      try {
+        const newXP = await updateXP(score);
+        setPreviousXP(newXP - score);
+        setShowCoins(true);
+      } catch (e) {
+        console.error("Failed to update XP:", e);
+      }
+    }
   };
 
   const handleAnswer = (option) => {
-    if (isAnswered || !currentQuestion) return;
-    
+    if (isAnswered) return;
+
     clearInterval(timerRef.current);
     setIsAnswered(true);
     setSelectedOption(option);
 
     const isCorrect = option === currentQuestion.correctAnswer;
-    let points = isCorrect ? 5 : -1;
-    
-    const newScore = score + points;
-    setScore(newScore);
+    const timeBonus = Math.ceil(timeLeft / 2);
+    const points = isCorrect ? (10 + timeBonus) : 0;
+
+    if (isCorrect) {
+      setScore(prev => prev + points);
+    }
 
     // Record answer
-    const newAnswer = {
-        question_id: currentQuestion.id,
-        question_text: currentQuestion.question,
-        user_answer: option,
-        correct_answer: currentQuestion.correctAnswer,
-        is_correct: isCorrect
+    const answerRecord = {
+      questionId: currentQuestion.id,
+      question: currentQuestion.question,
+      userAnswer: option,
+      correctAnswer: currentQuestion.correctAnswer,
+      isCorrect,
+      points
     };
-    answersRef.current.push(newAnswer);
 
+    setUserAnswers(prev => [...prev, answerRecord]);
+    answersRef.current.push(answerRecord);
+
+    // Wait and go to next
     setTimeout(() => {
       if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex((prev) => prev + 1);
+        setCurrentQuestionIndex(prev => prev + 1);
+        setTimeLeft(timeLimit);
         setIsAnswered(false);
         setSelectedOption(null);
       } else {
-        finishQuiz(newScore);
+        finishQuiz();
       }
     }, 1500);
   };
 
-  const finishQuiz = async (finalScore) => {
-    setPreviousXP(user?.xp || 0);
-    setIsFinished(true);
-    const endTime = Date.now();
-    const totalTime = (endTime - startTime) / 1000;
-    
-    if (finalScore > 0) {
-        updateXP(finalScore);
-        setTimeout(() => setShowCoins(true), 500);
-    }
-
-    // Submit to backend
-    try {
-        const user = JSON.parse(localStorage.getItem('user'));
-        const token = user?.token;
-        
-        await fetch('http://localhost:5000/api/quiz/submit', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                score: finalScore,
-                total_questions: questions.length,
-                time_taken: totalTime,
-                level: level,
-                answers: answersRef.current
-            })
-        });
-    } catch (error) {
-        console.error("Failed to submit quiz:", error);
-    }
-
-    const leaderboardEntry = {
-        score: finalScore,
-        time: totalTime,
-        date: new Date().toISOString()
-    };
-    const existingHistory = JSON.parse(localStorage.getItem('quizHistory') || '[]');
-    localStorage.setItem('quizHistory', JSON.stringify([...existingHistory, leaderboardEntry]));
-  };
-
   if (loading) {
-    return <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-primary)' }}>Loading questions...</div>;
+    return (
+      <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-primary)' }}>
+        <div style={{ marginBottom: '1rem' }}><Loader className="spin" size={32} /></div>
+        <div>{status}</div>
+      </div>
+    );
   }
 
   if (questions.length === 0) {
@@ -207,7 +231,7 @@ const Quiz = () => {
     const finalLevelXP = Math.min(currentLevelXP + gainedXP, 100);
 
     return (
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         className="card"
@@ -217,14 +241,14 @@ const Quiz = () => {
           <motion.div
             key={i}
             initial={{ opacity: 1, x: 0, y: 0, scale: 0.5 }}
-            animate={{ 
+            animate={{
               opacity: [1, 1, 0],
-              x: (Math.random() - 0.5) * 200, 
+              x: (Math.random() - 0.5) * 200,
               y: 150,
               scale: [0.5, 1.2, 0.5]
             }}
-            transition={{ 
-              duration: 1.5, 
+            transition={{
+              duration: 1.5,
               delay: i * 0.1,
               ease: "easeOut"
             }}
@@ -249,21 +273,21 @@ const Quiz = () => {
         </motion.div>
         <h2>Quiz Finished!</h2>
         <p style={{ fontSize: '1.5rem', margin: '1rem 0' }}>Your Score: <span className="highlight">{score}</span></p>
-        
+
         {/* XP Bar Animation */}
         <div style={{ maxWidth: '300px', margin: '2rem auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                <span>Level {Math.floor(previousXP / 100) + 1}</span>
-                <span>{gainedXP} XP Gained</span>
-            </div>
-            <div className="xp-bar-container" style={{ height: '12px' }}>
-                <motion.div 
-                    className="xp-bar-fill" 
-                    initial={{ width: `${currentLevelXP}%` }}
-                    animate={{ width: `${finalLevelXP}%` }}
-                    transition={{ duration: 1.5, delay: 0.5, ease: "easeOut" }}
-                />
-            </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+            <span>Level {Math.floor(previousXP / 100) + 1}</span>
+            <span>{gainedXP} XP Gained</span>
+          </div>
+          <div className="xp-bar-container" style={{ height: '12px' }}>
+            <motion.div
+              className="xp-bar-fill"
+              initial={{ width: `${currentLevelXP}%` }}
+              animate={{ width: `${finalLevelXP}%` }}
+              transition={{ duration: 1.5, delay: 0.5, ease: "easeOut" }}
+            />
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '2rem' }}>
@@ -275,28 +299,28 @@ const Quiz = () => {
   }
 
   if (!currentQuestion) {
-    return <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-primary)' }}>Error: Question not found.</div>;  
+    return <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-primary)' }}>Error: Question not found.</div>;
   }
 
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', alignItems: 'center' }}>
         <span style={{ color: 'var(--text-secondary)' }}>Question {currentQuestionIndex + 1}/{questions.length}</span>
-        <span style={{ 
-          backgroundColor: 'rgba(255, 255, 255, 0.1)', 
-          padding: '0.25rem 0.75rem', 
-          borderRadius: '1rem', 
+        <span style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+          padding: '0.25rem 0.75rem',
+          borderRadius: '1rem',
           fontSize: '0.875rem',
           border: '1px solid var(--border-color)'
         }}>
-            {level} Mode
+          {level} Mode
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--accent-primary)', fontWeight: 'bold' }}>
           <span>Score: {score}</span>
         </div>
       </div>
-      
-      <motion.div 
+
+      <motion.div
         key={currentQuestionIndex}
         initial={{ x: 0, opacity: 1 }}
         animate={{ x: 0, opacity: 1 }}
@@ -312,14 +336,14 @@ const Quiz = () => {
             </span>
           </div>
         </div>
-        
+
         <h3 style={{ fontSize: '1.25rem', marginBottom: '2rem', textAlign: 'center' }}>{currentQuestion.question}</h3>
-        
+
         <div className="quiz-options" style={{ display: 'grid', gap: '1rem' }}>
           {currentQuestion.options && currentQuestion.options.map((option, index) => {
             let className = "option-btn";
             let icon = null;
-            
+
             if (isAnswered) {
               if (option === currentQuestion.correctAnswer) {
                 className += " correct";
@@ -329,10 +353,10 @@ const Quiz = () => {
                 icon = <XCircle size={20} />;
               }
             }
-            
+
             return (
-              <motion.button 
-                key={option} 
+              <motion.button
+                key={option}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.1 }}

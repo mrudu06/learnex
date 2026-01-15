@@ -11,13 +11,17 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    await login(email, password);
-    navigate('/');
+    const success = await login(email, password);
+    if (success) {
+      navigate('/');
+    } else {
+      alert("Login failed! Please check your credentials.");
+    }
   };
 
   return (
     <div className="auth-container">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="auth-card"
@@ -26,29 +30,29 @@ const Login = () => {
         <form onSubmit={handleSubmit}>
           <div className="input-group">
             <label>Email</label>
-            <input 
-              type="email" 
-              value={email} 
-              onChange={(e) => setEmail(e.target.value)} 
-              required 
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
               placeholder="Enter your email"
             />
           </div>
           <div className="input-group">
             <label>Password</label>
-            <input 
-              type="password" 
-              value={password} 
-              onChange={(e) => setPassword(e.target.value)} 
-              required 
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
               placeholder="Enter your password"
             />
           </div>
-          <motion.button 
+          <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            type="submit" 
-            className="btn" 
+            type="submit"
+            className="btn"
             style={{ width: '100%' }}
           >
             Sign In
