@@ -8,6 +8,8 @@ import Leaderboard from './pages/Leaderboard'
 import Profile from './pages/Profile'
 import PreviousQuizzes from './pages/PreviousQuizzes'
 import QuizDetails from './pages/QuizDetails'
+import FlashcardMode from './pages/FlashcardMode'
+import Library from './pages/Library'
 import Layout from './components/Layout'
 import { useAuth } from './context/AuthContext'
 
@@ -55,6 +57,16 @@ function App() {
         <Route path="/profile" element={
           <PrivateRoute>
             <Profile />
+          </PrivateRoute>
+        } />
+        <Route path="/library" element={
+          <PrivateRoute>
+            <Library />
+          </PrivateRoute>
+        } />
+        <Route path="/flashcards" element={
+          <PrivateRoute>
+            <FlashcardMode />
           </PrivateRoute>
         } />
       </Routes>

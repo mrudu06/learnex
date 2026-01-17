@@ -9,6 +9,7 @@ export const StudyProvider = ({ children }) => {
     const [fileUrl, setFileUrl] = useState(null);
     const [numPages, setNumPages] = useState(null);
     const [extractedText, setExtractedText] = useState('');
+    const [extractedPages, setExtractedPages] = useState([]); // Array of strings (one per page)
     const [messages, setMessages] = useState([
         { role: 'ai', content: 'Upload a PDF to start studying! I can answer questions based on its content.' }
     ]);
@@ -22,6 +23,8 @@ export const StudyProvider = ({ children }) => {
         setNumPages,
         extractedText,
         setExtractedText,
+        extractedPages,
+        setExtractedPages,
         messages,
         setMessages
     };

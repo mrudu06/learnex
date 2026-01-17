@@ -7,6 +7,7 @@ import os
 import json
 import io
 from PyPDF2 import PdfReader
+import requests
 from dotenv import load_dotenv
 from ai_service import AIService
 from youtube_service import YouTubeService
@@ -144,6 +145,25 @@ class QuizAttemptAnswer(db.Model):
             'is_correct': self.is_correct
         }
 
+class StudySession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    file_name = db.Column(db.String(255), nullable=True) # PDF name
+    start_time = db.Column(db.DateTime, default=db.func.current_timestamp())
+    end_time = db.Column(db.DateTime, nullable=True)
+    duration = db.Column(db.Integer, default=0) # Seconds
+    pages_read = db.Column(db.Integer, default=0)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'file_name': self.file_name,
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'end_time': self.end_time.isoformat() if self.end_time else None,
+            'duration': self.duration,
+            'pages_read': self.pages_read
+        }
+
 class Note(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -192,7 +212,43 @@ class ChatMessage(db.Model):
             'timestamp': self.timestamp.isoformat()
         }
 
+
+class FlashcardDeck(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    topic = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    flashcards = db.relationship('Flashcard', backref='deck', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'topic': self.topic,
+            'card_count': len(self.flashcards),
+            'created_at': self.created_at.isoformat()
+        }
+
+class Flashcard(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    deck_id = db.Column(db.Integer, db.ForeignKey('flashcard_deck.id'), nullable=False)
+    front = db.Column(db.Text, nullable=False)
+    back = db.Column(db.Text, nullable=False)
+    difficulty = db.Column(db.String(20), default='medium') # easy, medium, hard
+    next_review = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'deck_id': self.deck_id,
+            'front': self.front,
+            'back': self.back,
+            'difficulty': self.difficulty
+        }
+
 # --- Routes ---
+
 
 @app.route('/')
 def home():
@@ -251,6 +307,7 @@ def generate_quiz():
     count = data.get('count', 5)
     difficulty = data.get('difficulty', 'Medium')
     context = data.get('context') # New: support quiz from PDF context
+    gemini_api_key = data.get('gemini_api_key')
     
     print(f"DEBUG: Generating Quiz. Topic: {topic}, Context Len: {len(context) if context else 0}")
 
@@ -259,7 +316,7 @@ def generate_quiz():
     # If strictly needed, we could add an is_configured() method, but requests will just fail if local is down.
 
 
-    json_response_text = ai_service.generate_quiz(topic, count, difficulty, context)
+    json_response_text = ai_service.generate_quiz(topic, count, difficulty, context, api_key=gemini_api_key)
     print(f"DEBUG: AI Response Len: {len(json_response_text) if json_response_text else 0}")
     
     if not json_response_text:
@@ -298,14 +355,12 @@ def generate_quiz():
                     
             elif isinstance(data, list):
                 for item in data:
-                    # specific handle for string-encoded JSON in list
                     if isinstance(item, str):
                         try: 
                             item = json.loads(item)
                         except: 
                             pass
                     found.extend(extract_questions_recursive(item))
-            
             return found
 
         candidates = extract_questions_recursive(quiz_data)
@@ -335,13 +390,64 @@ def generate_quiz():
         
         db.session.commit()
         
-        return jsonify({'message': 'Quiz generated successfully', 'count': len(quiz_data)}), 200
+        return jsonify({'message': 'Quiz generated successfully', 'count': len(candidates)}), 200
+
+    except Exception as e:
+        print(f"Error parsing quiz: {e}")
+        db.session.rollback()
+        return jsonify({'message': 'Error parsing quiz data'}), 500
+
+@app.route('/api/flashcards/generate', methods=['POST'])
+@jwt_required()
+def generate_flashcards():
+    data = request.get_json()
+    context = data.get('context')
+    count = data.get('count', 10)
+    gemini_api_key = data.get('gemini_api_key')
+    
+    if not context:
+        return jsonify({'message': 'Context is required'}), 400
+        
+    ai_service = AIService()
+    json_response = ai_service.generate_flashcards(count, context, api_key=gemini_api_key)
+    
+    if not json_response:
+        return jsonify({'message': 'Failed to generate flashcards'}), 500
+        
+    try:
+        flashcards_data = json.loads(json_response)
+        
+        # Save to DB
+        user_id = int(get_jwt_identity())
+        # Use first few words of context as title preview
+        title_preview = context[:30].strip() + "..." if context else "Flashcards"
+        deck = FlashcardDeck(user_id=user_id, title=f"Deck: {title_preview}", topic="Study")
+        db.session.add(deck)
+        db.session.commit()
+        
+        cards_to_return = []
+        for card in flashcards_data:
+             # Handle card structure variations if needed, but schema enforcement helps
+            fc = Flashcard(
+                deck_id=deck.id,
+                front=card.get('front', ''),
+                back=card.get('back', '')
+            )
+            db.session.add(fc)
+            cards_to_return.append(fc)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'deck_id': deck.id,
+            'flashcards': [c.to_dict() for c in cards_to_return]
+        }), 201
         
     except json.JSONDecodeError:
-        return jsonify({'message': 'Failed to parse AI response', 'raw': json_response_text}), 500
+        return jsonify({'message': 'Invalid JSON from AI'}), 500
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': f'Error saving data: {str(e)}'}), 500
+        print(f"Error saving flashcards: {e}")
+        return jsonify({'message': 'Error saving flashcards'}), 500
 
 @app.route('/api/quiz/data', methods=['POST'])
 def receive_quiz_data():
@@ -539,10 +645,13 @@ def extract_pdf_text():
             pdf_file = io.BytesIO(file.read())
             reader = PdfReader(pdf_file)
             text = ""
+            pages = []
             for page in reader.pages:
-                text += page.extract_text() + "\n"
+                page_text = page.extract_text()
+                text += page_text + "\n"
+                pages.append(page_text)
             
-            return jsonify({'text': text, 'message': 'PDF processed successfully'}), 200
+            return jsonify({'text': text, 'pages': pages, 'message': 'PDF processed successfully'}), 200
         except Exception as e:
             return jsonify({'message': f'Error processing PDF: {str(e)}'}), 500
 
@@ -553,13 +662,14 @@ def chat_with_ai():
     question = data.get('question')
     context = data.get('context') # The extracted PDF text
     mode = data.get('mode', 'partner')
+    gemini_api_key = data.get('gemini_api_key')
 
     if not question:
         return jsonify({'message': 'Question is required'}), 400
     
     ai_service = AIService()
 
-    answer = ai_service.ask_pdf(context, question, mode)
+    answer = ai_service.ask_pdf(context, question, mode, api_key=gemini_api_key)
     
     # Save session if requested
     session_id = data.get('session_id')
@@ -708,6 +818,107 @@ def delete_note(note_id):
     db.session.delete(note)
     db.session.commit()
     return jsonify({'message': 'Note deleted successfully'}), 200
+
+# --- Analytics Routes ---
+@app.route('/api/study/session/start', methods=['POST'])
+@jwt_required()
+def start_study_session():
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json()
+    file_name = data.get('file_name', 'Unknown')
+    
+    session = StudySession(user_id=current_user_id, file_name=file_name)
+    db.session.add(session)
+    db.session.commit()
+    return jsonify(session.to_dict()), 201
+
+@app.route('/api/study/session/heartbeat/<int:session_id>', methods=['POST'])
+@jwt_required()
+def heartbeat_study_session(session_id):
+    current_user_id = int(get_jwt_identity())
+    session = StudySession.query.get_or_404(session_id)
+    if session.user_id != current_user_id:
+        return jsonify({'message': 'Unauthorized'}), 403
+        
+    data = request.get_json()
+    duration_inc = data.get('duration_inc', 60) # Default 60s
+    pages = data.get('pages_read', 0)
+    
+    session.duration += duration_inc
+    session.pages_read = max(session.pages_read, pages) # Keep max pages read
+    session.end_time = db.func.current_timestamp() # Update end time constantly
+    db.session.commit()
+    return jsonify(session.to_dict()), 200
+
+@app.route('/api/analytics', methods=['GET'])
+@jwt_required()
+def get_analytics():
+    current_user_id = int(get_jwt_identity())
+    
+    # 1. Total Time Spent (Study Sessions)
+    total_study_seconds = db.session.query(db.func.sum(StudySession.duration)).filter_by(user_id=current_user_id).scalar() or 0
+    total_study_minutes = int(total_study_seconds / 60)
+    
+    # 2. Total Quizzes & Avg Score
+    quiz_attempts = QuizAttempt.query.filter_by(user_id=current_user_id).all()
+    quizzes_taken = len(quiz_attempts)
+    total_score = sum(a.score for a in quiz_attempts)
+    avg_score = int(total_score / quizzes_taken) if quizzes_taken > 0 else 0
+    
+    # 3. Last 7 Days Activity (Mocked aggregation for charts if needed, or real)
+    # Simple example: Daily Study Duration
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    last_7_days = []
+    
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Sum duration for this day
+        daily_seconds = db.session.query(db.func.sum(StudySession.duration)).filter(
+            StudySession.user_id == current_user_id,
+            StudySession.start_time >= day_start,
+            StudySession.start_time <= day_end
+        ).scalar() or 0
+        
+        last_7_days.append({
+            'date': day.strftime('%a'), # Mon, Tue
+            'minutes': int(daily_seconds / 60)
+        })
+
+    return jsonify({
+        'total_study_minutes': total_study_minutes,
+        'quizzes_taken': quizzes_taken,
+        'avg_score': avg_score,
+        'activity_chart': last_7_days
+    }), 200
+
+@app.route('/api/proxy/pdf', methods=['GET'])
+def proxy_pdf():
+    url = request.args.get('url')
+    if not url:
+        return jsonify({'message': 'URL parameter required'}), 400
+        
+    try:
+        # Fetch external PDF
+        resp = requests.get(url, stream=True)
+        resp.raise_for_status()
+        
+        # Determine content type (fallback to pdf)
+        content_type = resp.headers.get('Content-Type', 'application/pdf')
+        
+        # Return as stream or blob
+        from flask import Response
+        return Response(
+            resp.iter_content(chunk_size=1024), 
+            content_type=content_type,
+            headers={"Content-Disposition": f"attachment; filename=downloaded.pdf"}
+        )
+    except Exception as e:
+        print(f"Proxy Error: {e}")
+        return jsonify({'message': 'Failed to fetch PDF'}), 500
 
 if __name__ == '__main__':
     with app.app_context():

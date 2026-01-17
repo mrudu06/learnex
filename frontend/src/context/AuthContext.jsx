@@ -17,7 +17,7 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   }, []);
 
-  const login = async (email, password) => {
+  const login = async (email, password, geminiKey = null) => {
     try {
       const response = await fetch('http://localhost:5000/api/login', {
         method: 'POST',
@@ -30,12 +30,13 @@ export const AuthProvider = ({ children }) => {
       const data = await response.json();
 
       if (response.ok) {
-        const userData = { 
-          name: data.username, 
-          email: data.email, 
+        const userData = {
+          name: data.username,
+          email: data.email,
           token: data.access_token,
-          xp: 0, // Backend doesn't send XP yet, default to 0
-          id: 1 // Backend doesn't send ID in the response body I defined, but token has it. 
+          xp: 0,
+          id: 1,
+          geminiKey: geminiKey // Store user provided key
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
@@ -85,11 +86,11 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateXP = (points) => {
-      if (user) {
-          const updatedUser = { ...user, xp: user.xp + points };
-          setUser(updatedUser);
-          localStorage.setItem('user', JSON.stringify(updatedUser));
-      }
+    if (user) {
+      const updatedUser = { ...user, xp: user.xp + points };
+      setUser(updatedUser);
+      localStorage.setItem('user', JSON.stringify(updatedUser));
+    }
   }
 
   const value = {

@@ -1,0 +1,14 @@
+[Unit]
+Description=Gunicorn instance to serve LearnEx
+After=network.target
+
+[Service]
+User=mrudu
+Group=www-data
+WorkingDirectory=/home/mrudu/learnex/backend
+Environment="PATH=/home/mrudu/learnex/backend/venv/bin"
+EnvironmentFile=/home/mrudu/learnex/backend/.env
+ExecStart=/home/mrudu/learnex/backend/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:5000 app:app
+
+[Install]
+WantedBy=multi-user.target

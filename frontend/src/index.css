@@ -14,7 +14,7 @@
   --success: #22c55e;
   --error: #ef4444;
   --warning: #f59e0b;
-  
+
   color: var(--text-primary);
   background-color: var(--bg-primary);
 
@@ -51,7 +51,7 @@ body {
   display: flex;
   flex-direction: column;
   padding: 1.5rem;
-  box-shadow: 4px 0 24px rgba(0,0,0,0.2);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
   z-index: 10;
 }
 
@@ -97,7 +97,7 @@ body {
 
 .nav-item:hover {
   color: var(--text-primary);
-  background-color: rgba(255,255,255,0.05);
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .nav-item.active {
@@ -162,7 +162,9 @@ body {
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
-h1, h2, h3 {
+h1,
+h2,
+h3 {
   color: var(--text-primary);
   margin-top: 0;
 }
@@ -321,6 +323,7 @@ h1, h2, h3 {
   font-size: 2rem;
   background: linear-gradient(to right, var(--accent-primary), #a855f7);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -362,7 +365,7 @@ tr td:last-child {
   height: 24px;
 }
 
-.switch input { 
+.switch input {
   opacity: 0;
   width: 0;
   height: 0;
@@ -390,15 +393,15 @@ tr td:last-child {
   transition: .4s;
 }
 
-input:checked + .slider {
+input:checked+.slider {
   background-color: var(--accent-primary);
 }
 
-input:focus + .slider {
+input:focus+.slider {
   box-shadow: 0 0 1px var(--accent-primary);
 }
 
-input:checked + .slider:before {
+input:checked+.slider:before {
   transform: translateX(24px);
 }
 
@@ -407,6 +410,101 @@ input:checked + .slider:before {
   border-radius: 24px;
 }
 
-.slider.round:before {
+
+/* Sidebar - Collapsible Updates */
+.collapse-btn {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--bg-tertiary);
+  color: var(--text-secondary);
   border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: absolute;
+  right: -12px;
+  top: 48px;
+  z-index: 20;
+  transition: all 0.2s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.collapse-btn:hover {
+  background-color: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.sidebar.collapsed {
+  width: 80px;
+}
+
+.sidebar-scroll-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-item.centered {
+  justify-content: center;
+  padding: 0.75rem 0;
+}
+
+.nav-item.centered .icon-wrapper {
+  margin: 0;
+}
+
+/* Tools Section */
+.divider {
+  height: 1px;
+  background-color: var(--bg-tertiary);
+  margin: 0.5rem 1rem;
+}
+
+.tools-header {
+  width: 100%;
+  padding: 0.75rem 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.tools-header:hover {
+  color: var(--text-primary);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-tertiary) transparent;
 }

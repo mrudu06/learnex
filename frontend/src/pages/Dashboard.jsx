@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { motion } from 'framer-motion';
-import { BookOpen, Brain, Activity, Clock, Trophy, ArrowRight } from 'lucide-react';
+import { BookOpen, Brain, Activity, Clock, Trophy, ArrowRight, TrendingUp } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 const Dashboard = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState({
-    quizzesTaken: 0,
-    averageScore: 0,
-    recentActivity: []
+    total_study_minutes: 0,
+    quizzes_taken: 0,
+    avg_score: 0,
+    activity_chart: []
   });
   const [loading, setLoading] = useState(true);
 
@@ -19,15 +21,10 @@ const Dashboard = () => {
       try {
         const token = user?.token;
         const headers = { 'Authorization': `Bearer ${token}` };
-        const res = await fetch('http://localhost:5000/api/history', { headers });
+        const res = await fetch('http://localhost:5000/api/analytics', { headers });
         if (res.ok) {
-          const history = await res.json();
-          const totalScore = history.reduce((acc, curr) => acc + curr.score, 0);
-          setStats({
-            quizzesTaken: history.length,
-            averageScore: history.length > 0 ? Math.round(totalScore / history.length) : 0,
-            recentActivity: history.slice(0, 3)
-          });
+          const data = await res.json();
+          setStats(data);
         }
       } catch (error) {
         console.error("Error fetching stats:", error);
@@ -41,10 +38,7 @@ const Dashboard = () => {
 
   const container = {
     hidden: { opacity: 0 },
-    show: {
-      opacity: 1,
-      transition: { staggerChildren: 0.1 }
-    }
+    show: { opacity: 1, transition: { staggerChildren: 0.1 } }
   };
 
   const item = {
@@ -63,30 +57,55 @@ const Dashboard = () => {
         <h1 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>
           Welcome back, <span className="highlight">{user?.name}</span>
         </h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Ready to continue learning?</p>
+        <p style={{ color: 'var(--text-secondary)' }}>Here's your study progress for the week.</p>
       </motion.div>
 
       {/* Stats Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem', marginBottom: '2.5rem' }}>
         <StatCard
-          icon={<Activity size={24} color="#6366F1" />}
+          icon={<Clock size={24} color="#6366F1" />}
+          label="Total Study Time"
+          value={`${stats.total_study_minutes} min`}
+          loading={loading}
+        />
+        <StatCard
+          icon={<Activity size={24} color="#10B981" />}
           label="Quizzes Taken"
-          value={stats.quizzesTaken}
+          value={stats.quizzes_taken}
           loading={loading}
         />
         <StatCard
           icon={<Trophy size={24} color="#F59E0B" />}
           label="Avg. Score"
-          value={`${stats.averageScore}%`}
-          loading={loading}
-        />
-        <StatCard
-          icon={<Clock size={24} color="#10B981" />}
-          label="Last Active"
-          value={stats.recentActivity[0] ? new Date(stats.recentActivity[0].timestamp).toLocaleDateString() : 'Never'}
+          value={`${stats.avg_score}%`}
           loading={loading}
         />
       </div>
+
+      {/* Charts Section */}
+      <motion.div variants={item} style={{ marginBottom: '3rem' }}>
+        <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <TrendingUp size={20} /> Learning Activity
+        </h2>
+        <div className="card" style={{ height: '300px', padding: '1.5rem' }}>
+          {loading ? (
+            <div className="flex-center h-full text-secondary">Loading Chart...</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.activity_chart}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} />
+                <YAxis axisLine={false} tickLine={false} />
+                <Tooltip
+                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
+                  cursor={{ fill: 'rgba(99, 102, 241, 0.1)' }}
+                />
+                <Bar dataKey="minutes" fill="#6366F1" radius={[4, 4, 0, 0]} maxBarSize={50} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </motion.div>
 
       <motion.h2 variants={item} style={{ marginBottom: '1.5rem' }}>Quick Actions</motion.h2>
 
@@ -104,7 +123,7 @@ const Dashboard = () => {
           </div>
           <h3 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Study Center</h3>
           <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', flex: 1 }}>
-            Upload PDFs, extract insights, and chat with your AI tutor. Take notes as you learn.
+            Upload PDFs, extract insights, and chat with your AI tutor.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', color: '#4F46E5', fontWeight: 'bold' }}>
             Go to Study <ArrowRight size={18} style={{ marginLeft: '0.5rem' }} />
@@ -117,65 +136,20 @@ const Dashboard = () => {
           className="card"
           whileHover={{ y: -5, boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }}
           style={{ padding: '2rem', display: 'flex', flexDirection: 'column', height: '100%', cursor: 'pointer', border: '1px solid transparent' }}
-          onClick={() => navigate('/quiz', { state: { timeLimit: 10, level: 'Moderate' } })} // Default to Moderate for quick start
+          onClick={() => navigate('/quiz', { state: { timeLimit: 10, level: 'Moderate' } })}
         >
           <div style={{ background: 'rgba(245, 158, 11, 0.1)', width: 'fit-content', padding: '1rem', borderRadius: '1rem', marginBottom: '1.5rem' }}>
             <Brain size={32} color="#F59E0B" />
           </div>
-          <h3 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Quiz Zone</h3>
+          <h3 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Take a Quiz</h3>
           <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', flex: 1 }}>
-            Test your knowledge with AI-generated quizzes. Challenge yourself and track progress.
+            Test your knowledge with AI-generated quizzes.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', color: '#F59E0B', fontWeight: 'bold' }}>
-            Quick Start Quiz <ArrowRight size={18} style={{ marginLeft: '0.5rem' }} />
+            Start Quiz <ArrowRight size={18} style={{ marginLeft: '0.5rem' }} />
           </div>
         </motion.div>
       </div>
-
-      {/* Recent Activity Mini-Section */}
-      <motion.div variants={item}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h2>
-            Recent Activity
-          </h2>
-          <button onClick={() => navigate('/profile')} style={{ background: 'none', border: 'none', color: 'var(--accent-primary)', cursor: 'pointer', fontWeight: '500' }}>
-            View All
-          </button>
-        </div>
-        <div className="card" style={{ padding: '0' }}>
-          {loading ? (
-            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading...</div>
-          ) : stats.recentActivity.length === 0 ? (
-            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>No activity yet. Start studying!</div>
-          ) : (
-            stats.recentActivity.map((activity, index) => (
-              <div key={index} style={{
-                padding: '1rem 1.5rem',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                borderBottom: index < stats.recentActivity.length - 1 ? '1px solid var(--border-color)' : 'none'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <div style={{ background: 'var(--bg-secondary)', padding: '0.5rem', borderRadius: '0.5rem' }}>
-                    <Brain size={16} color="var(--text-secondary)" />
-                  </div>
-                  <div>
-                    <p style={{ fontWeight: '500' }}>{activity.level} Quiz</p>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{new Date(activity.timestamp).toLocaleDateString()}</p>
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <span style={{ fontWeight: 'bold', color: activity.score >= 50 ? 'var(--success)' : 'var(--error)' }}>
-                    {activity.score} pts
-                  </span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </motion.div>
-
     </motion.div>
   );
 };

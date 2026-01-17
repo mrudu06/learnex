@@ -1,17 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Document, Page, pdfjs } from 'react-pdf';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Send, Upload, Loader, MessageSquare, Clock, StickyNote, Save, Trash2, ArrowLeft, Plus, Brain, Video, ExternalLink } from 'lucide-react';
+import { Send, Upload, Loader, MessageSquare, Clock, StickyNote, Save, Trash2, ArrowLeft, Plus, Brain, Video, ExternalLink, X, ChevronDown, ChevronRight, Zap, Maximize, Minimize, Pen } from 'lucide-react';
 import { useStudy } from '../context/StudyContext';
-import 'react-pdf/dist/Page/AnnotationLayer.css';
-import 'react-pdf/dist/Page/TextLayer.css';
+import PDFViewer from '../components/PDFViewer';
+import Whiteboard from '../components/Whiteboard';
 
-// Configure PDF worker
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+
+// PDF configuration moved to PDFViewer component
+
 
 const ModeButton = ({ mode, currentMode, setMode, label, icon: Icon }) => (
   <button
@@ -38,12 +35,18 @@ const ModeButton = ({ mode, currentMode, setMode, label, icon: Icon }) => (
 );
 
 const Study = () => {
+  const containerRef = useRef(null);
+  const location = useLocation();
+  const [isDeepMode, setIsDeepMode] = useState(false);
+  const [showDeepPrompt, setShowDeepPrompt] = useState(true);
+
   // Global Study State
   const {
     file, setFile,
     fileUrl, setFileUrl,
     numPages, setNumPages,
     extractedText, setExtractedText,
+    extractedPages, setExtractedPages,
     messages, setMessages
   } = useStudy();
 
@@ -55,7 +58,14 @@ const Study = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [aiMode, setAiMode] = useState('partner'); // 'partner', 'quiz', 'summary'
 
+  // Quiz Scope State
+  const [showQuizModal, setShowQuizModal] = useState(false);
+  const [generationMode, setGenerationMode] = useState('quiz'); // 'quiz' or 'flashcards'
+  const [quizScope, setQuizScope] = useState({ type: 'full', start: 1, end: 1 });
+
   // Tools Panel State
+  const [isToolsExpanded, setIsToolsExpanded] = useState(true);
+  const [isAIExpanded, setIsAIExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState('chats'); // 'chats' or 'notes'
   const [chatSessions, setChatSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState(null); // null means new/unsaved session
@@ -69,6 +79,57 @@ const Study = () => {
   // Videos State
   const [videos, setVideos] = useState([]);
   const [isFetchingVideos, setIsFetchingVideos] = useState(false);
+
+  // Whiteboard State
+  const [isWhiteboardOpen, setIsWhiteboardOpen] = useState(false);
+  const [whiteboardTool, setWhiteboardTool] = useState('pen');
+
+  // Analytics State
+  const [studySessionId, setStudySessionId] = useState(null);
+
+  // Heartbeat Effect
+  useEffect(() => {
+    let heartbeatInterval;
+
+    const startSession = async () => {
+      if (!file) return;
+      try {
+        const token = JSON.parse(localStorage.getItem('user'))?.token;
+        const res = await fetch('http://localhost:5000/api/study/session/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ file_name: file.name })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setStudySessionId(data.id);
+        }
+      } catch (e) { console.error("Session start error", e); }
+    };
+
+    if (file && !studySessionId) {
+      startSession();
+    }
+
+    if (studySessionId) {
+      heartbeatInterval = setInterval(async () => {
+        try {
+          const token = JSON.parse(localStorage.getItem('user'))?.token;
+          await fetch(`http://localhost:5000/api/study/session/heartbeat/${studySessionId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ duration_inc: 60, pages_read: 1 }) // Hardcoded pages increment mostly time for now
+          });
+        } catch (e) {
+          console.error("Heartbeat failed", e);
+        }
+      }, 60000); // 1 minute
+    }
+
+    return () => {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+    };
+  }, [file, studySessionId]);
 
   // Fetch Chat Sessions
   const fetchChatSessions = async () => {
@@ -277,6 +338,7 @@ const Study = () => {
         const data = await response.json();
         if (response.ok) {
           setExtractedText(data.text);
+          setExtractedPages(data.pages || []); // Store pages
           setMessages(prev => [...prev, { role: 'ai', content: `Processed ${selectedFile.name}. content extracted! Ask me anything about it.` }]);
           // Start fresh chat for new file if wanted, or keep current?
           // Usually new file = new context = new chat.
@@ -286,6 +348,7 @@ const Study = () => {
         }
       } catch (error) {
         console.error("Upload error:", error);
+        alert("Failed to upload PDF. Please ensure the backend server is running.");
       } finally {
         setIsUploading(false);
       }
@@ -317,7 +380,8 @@ const Study = () => {
           question: userMsg,
           context: extractedText,
           session_id: currentSessionId || 'new',
-          mode: aiMode
+          mode: aiMode,
+          gemini_api_key: JSON.parse(localStorage.getItem('user'))?.geminiKey
         })
       });
 
@@ -343,347 +407,480 @@ const Study = () => {
     }
   };
 
+  // Deep Mode Handlers
+  const enterDeepMode = () => {
+    setIsDeepMode(true);
+    setShowDeepPrompt(false);
+    if (containerRef.current) {
+      if (containerRef.current.requestFullscreen) {
+        containerRef.current.requestFullscreen();
+      } else if (containerRef.current.webkitRequestFullscreen) { /* Safari */
+        containerRef.current.webkitRequestFullscreen();
+      } else if (containerRef.current.msRequestFullscreen) { /* IE11 */
+        containerRef.current.msRequestFullscreen();
+      }
+    }
+  };
+
+  const exitDeepMode = () => {
+    setIsDeepMode(false);
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) { /* Safari */
+      document.webkitExitFullscreen();
+    } else if (document.msExitFullscreen) { /* IE11 */
+      document.msExitFullscreen();
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setIsDeepMode(false);
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // Handle Loading Book from Library (URL)
+  useEffect(() => {
+    const loadFromLibrary = async () => {
+      if (location.state?.pdfUrl && !file) {
+        const { pdfUrl, title } = location.state;
+        try {
+          // Use Backend Proxy to avoid CORS
+          const proxyUrl = `http://localhost:5000/api/proxy/pdf?url=${encodeURIComponent(pdfUrl)}`;
+
+          // UI feedback
+          // setFile({ name: title || "Library Book" }); // Placeholder
+
+          // Since our proxy returns a stream with CORS headers now, we can fetch it
+          const response = await fetch(proxyUrl);
+
+          if (!response.ok) throw new Error("Failed to fetch book via proxy");
+          const blob = await response.blob();
+          const loadedFile = new File([blob], title || "Library Book.pdf", { type: "application/pdf" });
+
+          // Call existing onFileChange logic manually or refactor it
+          // onFileChange expects an event { target: { files: [file] } }
+          onFileChange({ target: { files: [loadedFile] } });
+
+          // Clear state so we don't reload on refresh loop
+          window.history.replaceState({}, document.title);
+        } catch (err) {
+          console.error("Error loading library book:", err);
+          alert("Failed to load book via proxy. Opening in new tab.");
+          window.open(location.state.pdfUrl, '_blank');
+        }
+      }
+    };
+    loadFromLibrary();
+  }, [location.state]);
+
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 40px)', gap: '1rem' }}>
+    <div
+      ref={containerRef}
+      style={{
+        display: 'flex',
+        height: '100%',
+        gap: '1rem',
+        overflow: 'hidden',
+        backgroundColor: isDeepMode ? '#0f172a' : 'transparent', // Darker bg for focus
+        padding: isDeepMode ? '1rem' : '0'
+      }}>
 
-      {/* Column 1: PDF Viewer (Fluid Width) */}
-      <motion.div
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
+
+      {/* Column 1: PDF Viewer (Fluid Main Content) */}
+      <motion.div layout
         className="card"
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1rem', overflow: 'hidden', minWidth: '400px' }}
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden', minWidth: '400px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}
       >
-        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3>Document Viewer</h3>
-          <div className="file-input-wrapper">
-            <label htmlFor="file-upload" className="btn btn-primary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Upload size={16} /> Upload PDF
-            </label>
-            <input id="file-upload" type="file" accept=".pdf" onChange={onFileChange} style={{ display: 'none' }} />
+        {!fileUrl ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem' }}>
+            <div style={{ padding: '2rem', backgroundColor: '#f1f5f9', borderRadius: '1rem', border: '2px dashed #cbd5e1' }}>
+              <Upload size={48} color="#94a3b8" />
+            </div>
+            <h3 style={{ margin: 0, color: '#475569' }}>Upload a PDF to Start Learning</h3>
+            <div className="file-input-wrapper">
+              <label htmlFor="file-upload" className="btn btn-primary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.5rem', fontSize: '1rem' }}>
+                <Upload size={18} /> Select PDF
+              </label>
+              <input id="file-upload" type="file" accept=".pdf" onChange={onFileChange} style={{ display: 'none' }} />
+            </div>
           </div>
-        </div>
-
-        <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#f3f4f6', borderRadius: '8px', display: 'flex', justifyContent: 'center' }}>
-          {fileUrl ? (
-            <Document
-              file={fileUrl}
-              onLoadSuccess={onDocumentLoadSuccess}
-              loading={<div style={{ padding: '2rem' }}>Loading PDF...</div>}
-            >
-              {Array.from(new Array(numPages), (el, index) => (
-                <Page
-                  key={`page_${index + 1}`}
-                  pageNumber={index + 1}
-                  width={500}
-                  renderTextLayer={false}
-                  renderAnnotationLayer={false}
-                  className="pdf-page"
-                />
-              ))}
-            </Document>
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' }}>
-              No PDF uploaded
-            </div>
-          )}
-        </div>
-      </motion.div>
-
-      {/* Column 2: Chat (Fixed Width) */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="card"
-        style={{ width: '350px', display: 'flex', flexDirection: 'column', padding: '1rem' }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3>AI Tutor</h3>
-        </div>
-
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.25rem', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
-          <ModeButton mode="partner" currentMode={aiMode} setMode={setAiMode} label="Chat" icon={MessageSquare} />
-          <button
-            onClick={() => {
-              if (!extractedText) {
-                alert("Please upload a PDF first to generate a quiz.");
-                return;
-              }
-              navigate('/quiz', { state: { context: extractedText, topic: 'Document Study' } });
-            }}
-            style={{
-              flex: 1,
-              padding: '0.5rem',
-              fontSize: '0.8rem',
-              borderRadius: '6px',
-              border: 'none',
-              backgroundColor: '#f3f4f6',
-              color: '#666',
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.3rem'
-            }}
-          >
-            <Brain size={14} />
-            Quiz
-          </button>
-          <ModeButton mode="summary" currentMode={aiMode} setMode={setAiMode} label="Summary" icon={StickyNote} />
-        </div>
-
-        <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', margin: '0.5rem 0', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {messages.map((msg, idx) => (
-            <div
-              key={idx}
-              style={{
-                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                backgroundColor: msg.role === 'user' ? '#4F46E5' : '#F3F4F6',
-                color: msg.role === 'user' ? 'white' : 'black',
-                padding: '0.75rem',
-                borderRadius: '12px',
-                maxWidth: '90%',
-                fontSize: '0.9rem'
-              }}
-            >
-              {msg.content}
-            </div>
-          ))}
-          {isProcessing && <div style={{ alignSelf: 'flex-start', color: '#666', fontSize: '0.85rem' }}>Thinking...</div>}
-        </div>
-
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder={aiMode === 'summary' ? "Type 'Go' to summarize..." : "Ask a question..."}
-            style={{
-              flex: 1,
-              padding: '0.75rem',
-              borderRadius: '8px',
-              border: '1px solid #ddd',
-              outline: 'none',
-              fontSize: '0.9rem'
-            }}
-            disabled={isProcessing}
-          />
-          <button
-            onClick={sendMessage}
-            className="btn btn-primary"
-            style={{ padding: '0.75rem' }}
-            disabled={isProcessing || !input.trim()}
-          >
-            <Send size={18} />
-          </button>
-        </div>
-      </motion.div>
-
-      {/* Column 3: Tools Panel (Chats/Notes) */}
-      <motion.div
-        initial={{ opacity: 0, x: 20 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: 0.2 }}
-        className="card"
-        style={{ width: '250px', display: 'flex', flexDirection: 'column', padding: '1rem', overflow: 'hidden' }}
-      >
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid #eee', paddingBottom: '0.5rem' }}>
-          <button
-            className={`btn ${activeTab === 'chats' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem' }}
-            onClick={() => setActiveTab('chats')}
-          >
-            Chats
-          </button>
-          <button
-            className={`btn ${activeTab === 'notes' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem' }}
-            onClick={() => setActiveTab('notes')}
-          >
-            Notes
-          </button>
-          <button
-            className={`btn ${activeTab === 'videos' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem' }}
-            onClick={() => setActiveTab('videos')}
-          >
-            Videos
-          </button>
-        </div>
-
-        {activeTab === 'chats' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', flex: 1 }}>
-            {chatSessions.length === 0 && <div style={{ textAlign: 'center', color: '#888', fontSize: '0.85rem', marginTop: '1rem' }}>No history yet.</div>}
-            {chatSessions.map((chat) => (
-              <div
-                key={chat.id}
-                onClick={() => loadChatSession(chat.id)}
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: currentSessionId === chat.id ? '#e0e7ff' : 'var(--bg-secondary)',
-                  border: currentSessionId === chat.id ? '1px solid #6366f1' : '1px solid transparent',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  position: 'relative'
-                }}
-                className="group"
-              >
+        ) : (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflow: 'hidden' }}>
+                <span style={{ fontWeight: 600, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
+                  {file?.name}
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                {/* Highlighter Paused for now
+                {!isWhiteboardOpen && (
+                  <button
+                    onClick={() => {
+                      setIsWhiteboardOpen(true);
+                      setWhiteboardTool('highlighter');
+                    }}
+                    className="btn btn-ghost"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#eab308' }}
+                    title="Open Highlighter"
+                  >
+                    <Pen size={18} className="opacity-50" /> Highlight
+                  </button>
+                )}
+                */}
                 <button
-                  onClick={(e) => deleteChatSession(e, chat.id)}
-                  style={{ position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '2px' }}
-                  title="Delete chat"
+                  onClick={() => setIsWhiteboardOpen(!isWhiteboardOpen)}
+                  className={`btn ${isWhiteboardOpen ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
                 >
-                  <Trash2 size={12} />
+                  <Pen size={18} /> {isWhiteboardOpen ? 'Close Board' : 'Whiteboard'}
                 </button>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem', color: 'var(--text-primary)', fontWeight: '500', fontSize: '0.9rem', paddingRight: '15px' }}>
-                  <MessageSquare size={14} />
-                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{chat.title}</span>
-                </div>
-                <div style={{ fontSize: '0.75rem', color: '#666', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: '0.25rem', paddingLeft: '22px' }}>
-                  {chat.last_message}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                  <Clock size={12} />
-                  <span>{new Date(chat.created_at).toLocaleDateString()}</span>
+                <button
+                  onClick={enterDeepMode}
+                  className="btn btn-ghost"
+                  title="Deep Study Mode"
+                >
+                  <Maximize size={18} />
+                </button>
+
+                <div className="file-input-wrapper">
+                  <label htmlFor="file-upload-change" style={{ cursor: 'pointer', color: '#6366f1', fontSize: '0.9rem', fontWeight: 500 }}>
+                    Change File
+                  </label>
+                  <input id="file-upload-change" type="file" accept=".pdf" onChange={onFileChange} style={{ display: 'none' }} />
                 </div>
               </div>
-            ))}
-            <button onClick={startNewChat} className="btn btn-secondary" style={{ marginTop: 'auto', fontSize: '0.85rem' }}>
-              + New Chat
-            </button>
-          </div>
-        )}
+            </div>
 
-        {activeTab === 'notes' && !editingNote && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto', flex: 1 }}>
-            <button onClick={startNewNote} className="btn btn-secondary" style={{ marginBottom: '0.5rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
-              <Plus size={14} /> New Note
-            </button>
-            {notes.length === 0 && <div style={{ textAlign: 'center', color: '#888', fontSize: '0.85rem', marginTop: '1rem' }}>No notes yet.</div>}
-            {notes.map(note => (
-              <div
-                key={note.id}
-                onClick={() => openNote(note)}
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: 'var(--bg-secondary)',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  border: '1px solid transparent'
-                }}
-              >
-                <div style={{ fontWeight: '500', fontSize: '0.9rem', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <StickyNote size={14} /> {note.title || 'Untitled'}
-                </div>
-                <div style={{ fontSize: '0.75rem', color: '#666', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {note.content}
-                </div>
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
+              <div style={{ flex: 1, overflow: 'hidden', borderRight: isWhiteboardOpen ? '1px solid #e2e8f0' : 'none' }}>
+                <PDFViewer
+                  file={file}
+                  fileUrl={fileUrl}
+                  numPages={numPages}
+                  onLoadSuccess={onDocumentLoadSuccess}
+                />
               </div>
-            ))}
-          </div>
-        )}
 
-        {activeTab === 'notes' && editingNote && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '0.5rem' }}>
-            <button onClick={() => setEditingNote(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.2rem', color: '#666', fontSize: '0.85rem', alignSelf: 'flex-start', padding: 0 }}>
-              <ArrowLeft size={14} /> Back
-            </button>
-            <input
-              type="text"
-              placeholder="Title"
-              value={noteTitle}
-              onChange={(e) => setNoteTitle(e.target.value)}
-              style={{ padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', outline: 'none', fontWeight: 'bold', fontSize: '0.9rem' }}
-            />
-            <textarea
-              value={noteContent}
-              onChange={(e) => setNoteContent(e.target.value)}
-              placeholder="Write your note here..."
-              style={{ flex: 1, padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', outline: 'none', resize: 'none', fontSize: '0.85rem', fontFamily: 'inherit' }}
-            />
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button onClick={handleSaveNote} className="btn btn-primary" style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem' }}>
-                <Save size={14} /> Save
-              </button>
-              {!editingNote.new && (
-                <button onClick={() => handleDeleteNote(editingNote.id)} className="btn" style={{ backgroundColor: '#fee2e2', color: '#ef4444', padding: '0.5rem', fontSize: '0.85rem' }}>
-                  <Trash2 size={14} />
-                </button>
+              {isWhiteboardOpen && (
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <Whiteboard activeTool={whiteboardTool} setActiveTool={setWhiteboardTool} />
+                </div>
               )}
             </div>
           </div>
         )}
 
-        {activeTab === 'videos' && (
-          <div style={{ flex: 1, overflowY: 'auto' }}>
-            {isFetchingVideos && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#666', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
-                <Loader className="spin" size={24} />
-                <span>Curating videos...</span>
+      </motion.div >
+
+      {/* Column 2: Right Panel (Tools & AI) */}
+      <div style={{ width: '360px', height: '100%', display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+
+        {/* Tools Section (Collapsible) */}
+        <motion.div layout
+          className="card"
+          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }}
+          animate={{ height: isToolsExpanded ? '40%' : 'auto' }}
+          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        >
+          <div
+            onClick={() => setIsToolsExpanded(!isToolsExpanded)}
+            style={{ padding: '1rem', borderBottom: isToolsExpanded ? '1px solid #eee' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'var(--bg-secondary)' }}
+          >
+            <h3 style={{ margin: 0, fontSize: '1rem' }}>Tools</h3>
+            <span style={{ color: '#94a3b8' }}>{isToolsExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</span>
+          </div>
+
+          {
+            isToolsExpanded && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '1rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid #eee', paddingBottom: '0.5rem' }}>
+                  <button className={`btn ${activeTab === 'chats' ? 'btn-primary' : 'btn-secondary'}`} style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }} onClick={() => setActiveTab('chats')}>Chats</button>
+                  <button className={`btn ${activeTab === 'notes' ? 'btn-primary' : 'btn-secondary'}`} style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }} onClick={() => setActiveTab('notes')}>Notes</button>
+                  <button className={`btn ${activeTab === 'videos' ? 'btn-primary' : 'btn-secondary'}`} style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }} onClick={() => setActiveTab('videos')}>Videos</button>
+                </div>
+
+                <div style={{ flex: 1, overflowY: 'auto' }}>
+                  {activeTab === 'chats' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {chatSessions.map((chat) => (
+                        <div key={chat.id} onClick={() => loadChatSession(chat.id)} style={{ padding: '0.5rem', backgroundColor: currentSessionId === chat.id ? '#e0e7ff' : '#f8fafc', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                          <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{chat.title}</div>
+                          <div style={{ fontSize: '0.75rem', color: '#666' }}>{new Date(chat.created_at).toLocaleDateString()}</div>
+                        </div>
+                      ))}
+                      <button onClick={startNewChat} className="btn btn-secondary" style={{ marginTop: '0.5rem', width: '100%', fontSize: '0.8rem' }}>+ New Chat</button>
+                    </div>
+                  )}
+                  {activeTab === 'notes' && !editingNote && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <button onClick={startNewNote} className="btn btn-secondary" style={{ marginBottom: '0.5rem', fontSize: '0.8rem', width: '100%' }}>+ New Note</button>
+                      {notes.length === 0 && <div style={{ textAlign: 'center', color: '#888', fontSize: '0.85rem', marginTop: '1rem' }}>No notes yet.</div>}
+                      {notes.map(note => (
+                        <div key={note.id} onClick={() => openNote(note)} style={{ padding: '0.5rem', backgroundColor: '#f8fafc', borderRadius: '6px', cursor: 'pointer' }}>
+                          <div style={{ fontWeight: 500, fontSize: '0.85rem' }}>{note.title || 'Untitled'}</div>
+                          <div style={{ fontSize: '0.75rem', color: '#666', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{note.content}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {activeTab === 'notes' && editingNote && (
+                    // Simplified Note Editor
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', height: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <button onClick={() => setEditingNote(null)} style={{ fontSize: '0.8rem' }}>&larr; Back</button>
+                        <button onClick={handleSaveNote} className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem' }}>Save</button>
+                      </div>
+                      <input type="text" value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} placeholder="Title" style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #ddd' }} />
+                      <textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} style={{ flex: 1, padding: '0.4rem', borderRadius: '4px', border: '1px solid #ddd', resize: 'none' }} placeholder="Note content..." />
+                    </div>
+                  )}
+                  {activeTab === 'videos' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {isFetchingVideos && (
+                        <div style={{ textAlign: 'center', padding: '1rem', color: '#666', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                          <Loader className="spin" size={20} />
+                          <span>Curating videos...</span>
+                        </div>
+                      )}
+                      {!isFetchingVideos && videos.length === 0 && <button onClick={fetchVideos} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>Find Videos</button>}
+                      {videos.map(video => (
+                        <a key={video.id} href={video.link} target="_blank" style={{ display: 'block', padding: '0.5rem', backgroundColor: '#f8fafc', borderRadius: '6px', textDecoration: 'none', color: 'inherit' }}>
+                          <div style={{ fontWeight: 500, fontSize: '0.85rem' }}>{video.title}</div>
+                          <div style={{ fontSize: '0.75rem', color: '#666' }}>{video.channel}</div>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
-            {!isFetchingVideos && videos.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>
-                <p style={{ marginBottom: '1rem' }}>No videos found yet.</p>
-                <button onClick={fetchVideos} className="btn btn-primary" style={{ fontSize: '0.85rem' }}>
-                  Find Related Videos
-                </button>
-              </div>
-            )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {videos.map(video => (
-                <a
-                  key={video.id}
-                  href={video.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
-                // className="video-card-link"
-                >
-                  <div style={{ backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', overflow: 'hidden', border: '1px solid transparent', transition: 'transform 0.2s' }}
-                    onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
-                    onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+        </motion.div >
+
+        {/* AI Tutor Section (Collapsible - Fills remaining space) */}
+        <motion.div layout
+          className="card"
+          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }
+          }
+          animate={{ flex: isAIExpanded ? 1 : 0, height: isAIExpanded ? 'auto' : 'auto' }}
+        >
+          <div
+            onClick={() => setIsAIExpanded(!isAIExpanded)}
+            style={{ padding: '1rem', borderBottom: isToolsExpanded ? '1px solid #eee' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'var(--bg-secondary)' }}
+          >
+            <h3 style={{ margin: 0, fontSize: '1rem' }}>AI Tutor</h3>
+            <span style={{ color: '#94a3b8' }}>{isAIExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</span>
+          </div>
+
+          {
+            isAIExpanded && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1rem', paddingTop: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.25rem', backgroundColor: '#f9fafb', borderRadius: '8px', flexShrink: 0 }}>
+                  <ModeButton mode="partner" currentMode={aiMode} setMode={setAiMode} label="Chat" icon={MessageSquare} />
+                  <button
+                    onClick={() => {
+                      if (!extractedText) {
+                        alert("Please upload a PDF first to generate content.");
+                        return;
+                      }
+                      setGenerationMode('quiz');
+                      setShowQuizModal(true);
+                    }}
+                    style={{ flex: 1, padding: '0.5rem', fontSize: '0.8rem', borderRadius: '6px', border: 'none', backgroundColor: '#f3f4f6', color: '#666', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
                   >
-                    <div style={{ position: 'relative', paddingBottom: '56.25%', backgroundColor: '#000' }}>
-                      {video.thumbnail && <img src={video.thumbnail} alt={video.title} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
-                      <div style={{ position: 'absolute', bottom: '5px', right: '5px', background: 'rgba(0,0,0,0.8)', color: 'white', fontSize: '0.7rem', padding: '2px 4px', borderRadius: '4px' }}>
-                        {video.duration}
-                      </div>
-                    </div>
-                    <div style={{ padding: '0.75rem' }}>
-                      <div style={{ fontSize: '0.85rem', fontWeight: '600', marginBottom: '0.25rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '1.3' }}>
-                        {video.title}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>{video.channel}</span>
-                        <span>{video.viewCount} views</span>
-                      </div>
-                    </div>
-                  </div>
-                </a>
-              ))}
-            </div>
+                    <Brain size={14} /> Quiz
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!extractedText) {
+                        alert("Please upload a PDF first to generate content.");
+                        return;
+                      }
+                      setGenerationMode('flashcards');
+                      setShowQuizModal(true);
+                    }}
+                    style={{ flex: 1, padding: '0.5rem', fontSize: '0.8rem', borderRadius: '6px', border: 'none', backgroundColor: '#f3f4f6', color: '#666', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
+                  >
+                    <Zap size={14} /> Cards
+                  </button>
+                  <ModeButton mode="summary" currentMode={aiMode} setMode={setAiMode} label="Summary" icon={StickyNote} />
+                </div>
 
-            {!isFetchingVideos && videos.length > 0 && (
-              <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-                <button onClick={fetchVideos} className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
-                  Refresh Recommendations
-                </button>
+                <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', marginBottom: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {messages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                        backgroundColor: msg.role === 'user' ? '#4F46E5' : '#F3F4F6',
+                        color: msg.role === 'user' ? 'white' : 'black',
+                        padding: '0.75rem',
+                        borderRadius: '12px',
+                        maxWidth: '90%',
+                        fontSize: '0.9rem'
+                      }}
+                    >
+                      {msg.content}
+                    </div>
+                  ))}
+                  {isProcessing && <div style={{ alignSelf: 'flex-start', color: '#666', fontSize: '0.85rem' }}>Thinking...</div>}
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                    placeholder={aiMode === 'summary' ? "Type 'Go'..." : "Ask..."}
+                    style={{ flex: 1, padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd', outline: 'none', fontSize: '0.9rem' }}
+                    disabled={isProcessing}
+                  />
+                  <button onClick={sendMessage} className="btn btn-primary" style={{ padding: '0.75rem' }} disabled={isProcessing || !input.trim()}>
+                    <Send size={18} />
+                  </button>
+                </div>
               </div>
-            )}
+            )
+          }
+        </motion.div >
+      </div >
+
+      {/* Quiz Setup Modal */}
+      {
+        showQuizModal && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+            <div className="card" style={{ width: '400px', padding: '1.5rem', backgroundColor: 'var(--bg-secondary)', borderRadius: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h3>{generationMode === 'quiz' ? 'Generate Quiz' : 'Generate Flashcards'}</h3>
+                <button onClick={() => setShowQuizModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}><X size={20} /></button>
+              </div>
+
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>Scope</label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button onClick={() => setQuizScope({ ...quizScope, type: 'full' })} className={`btn ${quizScope.type === 'full' ? 'btn-primary' : 'btn-secondary'}`} style={{ flex: 1 }}>Whole Document</button>
+                  <button onClick={() => setQuizScope({ ...quizScope, type: 'selected' })} className={`btn ${quizScope.type === 'selected' ? 'btn-primary' : 'btn-secondary'}`} style={{ flex: 1 }}>Selected Pages</button>
+                </div>
+              </div>
+
+              {quizScope.type === 'selected' && (
+                <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '1rem' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Start Page</label>
+                    <input type="number" min="1" max={numPages} value={quizScope.start} onChange={(e) => setQuizScope({ ...quizScope, start: parseInt(e.target.value) || 1 })} style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>End Page</label>
+                    <input type="number" min="1" max={numPages} value={quizScope.end} onChange={(e) => setQuizScope({ ...quizScope, end: parseInt(e.target.value) || 1 })} style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }} />
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={() => {
+                  let contextToSend = extractedText;
+                  if (quizScope.type === 'selected') {
+                    if (!extractedPages || extractedPages.length === 0) {
+                      alert("Page data not available. Please re-upload the PDF.");
+                      return;
+                    }
+                    const s = Math.max(1, quizScope.start);
+                    const e = Math.min(numPages || extractedPages.length, quizScope.end);
+
+                    if (e < s) {
+                      alert("End page must be greater than start page.");
+                      return;
+                    }
+                    contextToSend = extractedPages.slice(s - 1, e).join("\n");
+                  }
+
+                  if (!contextToSend) { alert("No content."); return; }
+                  setShowQuizModal(false);
+
+                  if (generationMode === 'flashcards') {
+                    navigate('/flashcards', { state: { context: contextToSend, topic: 'Document Study' } });
+                  } else {
+                    navigate('/quiz', { state: { context: contextToSend, topic: 'Document Study' } });
+                  }
+                }}
+                className="btn btn-primary" style={{ width: '100%' }}
+              >
+                Generate Quiz
+              </button>
+            </div>
           </div>
         )}
+      {/* Deep Mode Prompt Modal */}
+      {
+        showDeepPrompt && !isDeepMode && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '1rem', width: '400px', textAlign: 'center', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}
+            >
+              <div style={{ marginBottom: '1.5rem', display: 'inline-flex', padding: '1rem', borderRadius: '50%', backgroundColor: '#EEF2FF' }}>
+                <Maximize size={32} className="text-indigo-600" />
+              </div>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#1e293b' }}>Deep Study Mode</h2>
+              <p style={{ color: '#64748b', marginBottom: '2rem' }}>Enable Deep Mode to hide distractions, silence notifications, and focus entirely on your material.</p>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button onClick={() => setShowDeepPrompt(false)} style={{ flex: 1, padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #cbd5e1', backgroundColor: 'white', color: '#475569', cursor: 'pointer', fontWeight: 500 }}>
+                  Maybe Later
+                </button>
+                <button onClick={enterDeepMode} style={{ flex: 1, padding: '0.75rem', borderRadius: '0.5rem', border: 'none', backgroundColor: '#4F46E5', color: 'white', cursor: 'pointer', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+                  <Maximize size={16} /> Focus Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )
+      }
 
-      </motion.div>
+      {/* Floating Exit Deep Mode Button */}
+      {
+        isDeepMode && (
+          <motion.button
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={exitDeepMode}
+            style={{
+              position: 'fixed',
+              bottom: '2rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              backgroundColor: 'rgba(255, 255, 255, 0.9)',
+              backdropFilter: 'blur(10px)',
+              padding: '0.75rem 1.5rem',
+              borderRadius: '9999px',
+              border: 'none',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              zIndex: 9999,
+              color: '#1e293b',
+              fontWeight: 600
+            }}
+          >
+            <Minimize size={18} /> Exit Deep Mode
+          </motion.button>
+        )
+      }
 
-    </div>
+
+    </div >
   );
+
 };
 
 export default Study;
