@@ -111,7 +111,7 @@ JSON Format:
 }}
 
 CONTEXT:
-{truncated_context}...
+{truncated_context}... 
 """
         try:
             response = client.models.generate_content(
