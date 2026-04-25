@@ -1,4 +1,4 @@
-# LearnEx - AI-Powered Learning Platform
+ # LearnEx - AI-Powered Learning Platform
 
 LearnEx is a modern web application designed to enhance the learning experience by combining structured course content with AI-driven interactive tools. It features a React-based frontend and a Flask backend, integrating Google's Gemini AI to provide intelligent assistance.
 
